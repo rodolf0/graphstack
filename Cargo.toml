@@ -1,0 +1,11 @@
+[package]
+name = "graphstack"
+version = "0.1.0"
+authors = ["Rodolfo Granata <warlock.cc@gmail.com>"]
+edition = "2018"
+description = "Graph-structured stack"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
