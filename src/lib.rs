@@ -52,6 +52,7 @@ impl<T> GraphStack<T> {
 }
 
 /// A cursor for keeping track when iterating over a GraphStack.
+#[derive(Debug)]
 struct Cursor {
     item: usize,
     ancestor: usize,
@@ -87,36 +88,39 @@ impl<'a, T> Iterator for Stacks<'a, T> {
     type Item = Vec<&'a T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.cursors.len() > 0 {
-            let mut cursor = self.cursors.last_mut().unwrap();
-            let ref ancestors = self.gs.ancestors[&cursor.item];
-            if ancestors.is_empty() {
-                // Hit the bottom of the stack, its complete, return that.
-                let stack = self.unstack.clone();
-                // Advance iterator state
-                while !self.cursors.is_empty() {
-                    cursor = self.cursors.last_mut().unwrap();
-                    if cursor.ancestor + 1 < self.gs.ancestors[&cursor.item].len() {
-                        cursor.ancestor += 1;
-                        break;
-                    }
-                    self.cursors.pop();
-                    // could unstack.pop here, or just truncate unstack after loop is done
-                }
-                // keep the part of the stack that is common for other ancestors
-                self.unstack.truncate(self.cursors.len());
-                return Some(stack);
-            } else {
-                let a = ancestors[cursor.ancestor];
-                self.unstack.push(&self.gs.items[a]);
-                // simulate call stack, search DFS next level
-                self.cursors.push(Cursor {
-                    item: a,
-                    ancestor: 0,
-                });
-            }
+        if self.cursors.is_empty() {
+            return None;
         }
-        None
+
+        // Build a snapshot of the stack pointed to by current cursors
+        while let Some(cursor) = self.cursors.last() {
+            let ref item_ancestors = self.gs.ancestors[&cursor.item];
+            // Is cursor at the bottom of the stack, or has more depth?
+            if item_ancestors.is_empty() {
+                break;
+            }
+            let prev_item_id = item_ancestors[cursor.ancestor];
+            self.unstack.push(&self.gs.items[prev_item_id]);
+            self.cursors.push(Cursor {
+                item: prev_item_id,
+                ancestor: 0,
+            });
+        }
+        let stack_snapshot = self.unstack.clone();
+
+        // Advance iterator: find the cursor to advance depth-first
+        while let Some(cursor) = self.cursors.last_mut() {
+            let num_item_ancestors = self.gs.ancestors[&cursor.item].len();
+            if cursor.ancestor + 1 < num_item_ancestors {
+                cursor.ancestor += 1;
+                break;
+            }
+            self.cursors.pop();
+        }
+        // keep the part of the stack that is common for other ancestors
+        self.unstack.truncate(self.cursors.len());
+
+        Some(stack_snapshot)
     }
 }
 
@@ -125,7 +129,10 @@ mod tests {
     use super::GraphStack;
     use std::collections::HashMap;
 
-    fn setup<'a>() -> (GraphStack<&'a str>, HashMap<&'a str, usize>) {
+    #[test]
+    fn check_iterator() {
+        // a - b - c - e - f - g - h
+        //      \ d -/------/
         let mut gs = GraphStack::new();
         let idmap: HashMap<_, _> = ["a", "b", "c", "d", "e", "f", "g", "h"]
             .iter()
@@ -140,13 +147,6 @@ mod tests {
         gs.add_ancestors(idmap["f"], &[idmap["e"]]);
         gs.add_ancestors(idmap["g"], &[idmap["d"], idmap["f"]]);
         gs.add_ancestors(idmap["h"], &[idmap["g"]]);
-
-        (gs, idmap)
-    }
-
-    #[test]
-    fn check_simple_gs_iterator() {
-        let (gs, idmap) = setup();
         let mut it = gs.stacks(idmap["h"]);
         assert_eq!(it.next().unwrap(), vec![&"h", &"g", &"d", &"b", &"a"]);
         assert_eq!(
@@ -157,6 +157,62 @@ mod tests {
             it.next().unwrap(),
             vec![&"h", &"g", &"f", &"e", &"d", &"b", &"a"]
         );
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn disjoint_stacks() {
+        // a - b - c
+        // d - e
+        let mut gs = GraphStack::new();
+        let idmap: HashMap<_, _> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .cloned()
+            .map(|value| (value, gs.push(value, &[])))
+            .collect();
+
+        gs.add_ancestors(idmap["b"], &[idmap["a"]]);
+        gs.add_ancestors(idmap["c"], &[idmap["b"]]);
+        // disjoint stack
+        gs.add_ancestors(idmap["e"], &[idmap["d"]]);
+
+        let mut it = gs.stacks(idmap["e"]);
+        assert_eq!(it.next().unwrap(), vec![&"e", &"d"]);
+        assert!(it.next().is_none());
+
+        let mut it = gs.stacks(idmap["c"]);
+        assert_eq!(it.next().unwrap(), vec![&"c", &"b", &"a"]);
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn x_stack() {
+        // a - b - c
+        // d /  \ e
+        let mut gs = GraphStack::new();
+        let idmap: HashMap<_, _> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .cloned()
+            .map(|value| (value, gs.push(value, &[])))
+            .collect();
+
+        gs.add_ancestors(idmap["b"], &[idmap["a"], idmap["d"]]);
+        gs.add_ancestors(idmap["c"], &[idmap["b"]]);
+        gs.add_ancestors(idmap["e"], &[idmap["b"]]);
+
+        let mut it = gs.stacks(idmap["e"]);
+        assert_eq!(it.next().unwrap(), vec![&"e", &"b", &"a"]);
+        assert_eq!(it.next().unwrap(), vec![&"e", &"b", &"d"]);
+        assert!(it.next().is_none());
+
+        let mut it = gs.stacks(idmap["c"]);
+        assert_eq!(it.next().unwrap(), vec![&"c", &"b", &"a"]);
+        assert_eq!(it.next().unwrap(), vec![&"c", &"b", &"d"]);
+        assert!(it.next().is_none());
+
+        let mut it = gs.stacks(idmap["b"]);
+        assert_eq!(it.next().unwrap(), vec![&"b", &"a"]);
+        assert_eq!(it.next().unwrap(), vec![&"b", &"d"]);
         assert!(it.next().is_none());
     }
 
